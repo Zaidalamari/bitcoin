@@ -1,4 +1,4 @@
-// Copyright (c) 2024 The Bitcoin Core developers
+// Copyright (c) 2024-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -6,8 +6,10 @@
 #include <test/fuzz/fuzz.h>
 #include <test/fuzz/util.h>
 #include <test/fuzz/util/net.h>
+#include <test/util/time.h>
 
 #include <common/pcp.h>
+#include <logging.h>
 #include <util/check.h>
 #include <util/threadinterrupt.h>
 
@@ -30,11 +32,13 @@ void port_map_target_init()
 FUZZ_TARGET(pcp_request_port_map, .init = port_map_target_init)
 {
     FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
+    FakeSteadyClock steady_clock;
 
     // Create a mocked socket between random (and potentially invalid) client and gateway addresses.
+    auto CreateSockOrig = CreateSock;
     CreateSock = [&](int domain, int type, int protocol) {
         if ((domain == AF_INET || domain == AF_INET6) && type == SOCK_DGRAM && protocol == IPPROTO_UDP) {
-            return std::make_unique<FuzzedSock>(fuzzed_data_provider);
+            return std::make_unique<FuzzedSock>(fuzzed_data_provider, steady_clock);
         }
         return std::unique_ptr<FuzzedSock>();
     };
@@ -53,16 +57,20 @@ FUZZ_TARGET(pcp_request_port_map, .init = port_map_target_init)
         Assert(mapping->internal.GetPort() == port);
         mapping->ToString();
     }
+
+    CreateSock = CreateSockOrig;
 }
 
 FUZZ_TARGET(natpmp_request_port_map, .init = port_map_target_init)
 {
     FuzzedDataProvider fuzzed_data_provider{buffer.data(), buffer.size()};
+    FakeSteadyClock steady_clock;
 
     // Create a mocked socket between random (and potentially invalid) client and gateway addresses.
+    auto CreateSockOrig = CreateSock;
     CreateSock = [&](int domain, int type, int protocol) {
         if (domain == AF_INET && type == SOCK_DGRAM && protocol == IPPROTO_UDP) {
-            return std::make_unique<FuzzedSock>(fuzzed_data_provider);
+            return std::make_unique<FuzzedSock>(fuzzed_data_provider, steady_clock);
         }
         return std::unique_ptr<FuzzedSock>();
     };
@@ -80,4 +88,6 @@ FUZZ_TARGET(natpmp_request_port_map, .init = port_map_target_init)
         Assert(mapping->internal.GetPort() == port);
         mapping->ToString();
     }
+
+    CreateSock = CreateSockOrig;
 }

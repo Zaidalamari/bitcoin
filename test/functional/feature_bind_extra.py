@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2014-2022 The Bitcoin Core developers
+# Copyright (c) 2014-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """
@@ -32,44 +32,48 @@ class BindExtraTest(BitcoinTestFramework):
         self.num_nodes = 3
 
     def skip_test_if_missing_module(self):
-        # Due to OS-specific network stats queries, we only run on Linux.
-        self.skip_if_platform_not_linux()
+        self.skip_if_platform_not_posix()
+        self.skip_if_no_lsof_on_nonlinux()
 
     def setup_network(self):
         loopback_ipv4 = addr_to_hex("127.0.0.1")
 
         # Start custom ports by reusing unused p2p ports
-        port = p2p_port(self.num_nodes)
+        def extra_port():
+            port = p2p_port(extra_port.index)
+            extra_port.index += 1
+            return port
+        extra_port.index = self.num_nodes
 
         # Array of tuples [command line arguments, expected bind addresses].
         self.expected = []
 
         # Node0, no normal -bind=... with -bind=...=onion, thus only the tor target.
+        port = extra_port()
         self.expected.append(
             [
                 [f"-bind=127.0.0.1:{port}=onion"],
-                [(loopback_ipv4, port)]
+                [(loopback_ipv4, port)],
             ],
         )
-        port += 1
 
         # Node1, both -bind=... and -bind=...=onion.
+        port = [extra_port(), extra_port()]
         self.expected.append(
             [
-                [f"-bind=127.0.0.1:{port}", f"-bind=127.0.0.1:{port + 1}=onion"],
-                [(loopback_ipv4, port), (loopback_ipv4, port + 1)]
+                [f"-bind=127.0.0.1:{port[0]}", f"-bind=127.0.0.1:{port[1]}=onion"],
+                [(loopback_ipv4, port[0]), (loopback_ipv4, port[1])],
             ],
         )
-        port += 2
 
         # Node2, no -bind=...=onion, thus no extra port for Tor target.
+        port = extra_port()
         self.expected.append(
             [
                 [f"-bind=127.0.0.1:{port}"],
-                [(loopback_ipv4, port)]
+                [(loopback_ipv4, port)],
             ],
         )
-        port += 1
 
         self.extra_args = list(map(lambda e: e[0], self.expected))
         self.setup_nodes()

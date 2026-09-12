@@ -16,8 +16,10 @@
 #include <optional>
 #include <vector>
 
-const unsigned int BIP32_EXTKEY_SIZE = 74;
-const unsigned int BIP32_EXTKEY_WITH_VERSION_SIZE = 78;
+inline constexpr unsigned int BIP32_EXTKEY_SIZE = 74;
+inline constexpr unsigned int BIP32_EXTKEY_WITH_VERSION_SIZE = 78;
+
+using KeyFingerprint = std::array<unsigned char, 4>;
 
 /** A reference to a CKey: the Hash160 of its serialized public key */
 class CKeyID : public uint160
@@ -25,9 +27,13 @@ class CKeyID : public uint160
 public:
     CKeyID() : uint160() {}
     explicit CKeyID(const uint160& in) : uint160(in) {}
+    KeyFingerprint fingerprint() const
+    {
+        KeyFingerprint ret;
+        std::copy_n(begin(), ret.size(), ret.begin());
+        return ret;
+    }
 };
-
-typedef uint256 ChainCode;
 
 /** An encapsulated public key. */
 class CPubKey
@@ -120,10 +126,6 @@ public:
     {
         return a.vch[0] == b.vch[0] &&
                memcmp(a.vch, b.vch, a.size()) == 0;
-    }
-    friend bool operator!=(const CPubKey& a, const CPubKey& b)
-    {
-        return !(a == b);
     }
     friend bool operator<(const CPubKey& a, const CPubKey& b)
     {
@@ -224,7 +226,7 @@ public:
     bool Decompress();
 
     //! Derive BIP32 child pubkey.
-    [[nodiscard]] bool Derive(CPubKey& pubkeyChild, ChainCode &ccChild, unsigned int nChild, const ChainCode& cc) const;
+    [[nodiscard]] bool Derive(CPubKey& pubkeyChild, ChainCode &ccChild, unsigned int nChild, const ChainCode& cc, uint256* bip32_tweak_out = nullptr) const;
 };
 
 class XOnlyPubKey
@@ -302,7 +304,6 @@ public:
     unsigned char* begin() { return m_keydata.begin(); }
     unsigned char* end() { return m_keydata.end(); }
     bool operator==(const XOnlyPubKey& other) const { return m_keydata == other.m_keydata; }
-    bool operator!=(const XOnlyPubKey& other) const { return m_keydata != other.m_keydata; }
     bool operator<(const XOnlyPubKey& other) const { return m_keydata < other.m_keydata; }
 
     //! Implement serialization without length prefixes since it is a fixed length
@@ -336,17 +337,12 @@ public:
     {
         return a.m_pubkey == b.m_pubkey;
     }
-
-    bool friend operator!=(const EllSwiftPubKey& a, const EllSwiftPubKey& b)
-    {
-        return a.m_pubkey != b.m_pubkey;
-    }
 };
 
 struct CExtPubKey {
     unsigned char version[4];
     unsigned char nDepth;
-    unsigned char vchFingerprint[4];
+    KeyFingerprint fingerprint;
     unsigned int nChild;
     ChainCode chaincode;
     CPubKey pubkey;
@@ -354,15 +350,10 @@ struct CExtPubKey {
     friend bool operator==(const CExtPubKey &a, const CExtPubKey &b)
     {
         return a.nDepth == b.nDepth &&
-            memcmp(a.vchFingerprint, b.vchFingerprint, sizeof(vchFingerprint)) == 0 &&
+            a.fingerprint == b.fingerprint &&
             a.nChild == b.nChild &&
             a.chaincode == b.chaincode &&
             a.pubkey == b.pubkey;
-    }
-
-    friend bool operator!=(const CExtPubKey &a, const CExtPubKey &b)
-    {
-        return !(a == b);
     }
 
     friend bool operator<(const CExtPubKey &a, const CExtPubKey &b)
@@ -375,11 +366,16 @@ struct CExtPubKey {
         return a.chaincode < b.chaincode;
     }
 
+    KeyFingerprint id_key_fingerprint() const
+    {
+        return pubkey.GetID().fingerprint();
+    }
+
     void Encode(unsigned char code[BIP32_EXTKEY_SIZE]) const;
     void Decode(const unsigned char code[BIP32_EXTKEY_SIZE]);
     void EncodeWithVersion(unsigned char code[BIP32_EXTKEY_WITH_VERSION_SIZE]) const;
     void DecodeWithVersion(const unsigned char code[BIP32_EXTKEY_WITH_VERSION_SIZE]);
-    [[nodiscard]] bool Derive(CExtPubKey& out, unsigned int nChild) const;
+    [[nodiscard]] bool Derive(CExtPubKey& out, unsigned int nChild, uint256* bip32_tweak_out = nullptr) const;
 };
 
 #endif // BITCOIN_PUBKEY_H

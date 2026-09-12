@@ -1,4 +1,4 @@
-// Copyright (c) 2023 The Bitcoin Core developers
+// Copyright (c) 2023-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -8,12 +8,14 @@
 #include <primitives/transaction.h>
 #include <util/hasher.h>
 
+#include <cstddef>
+#include <cstdint>
 #include <list>
 #include <unordered_map>
 #include <vector>
 
 /** Maximum bytes for transactions to store for processing during reorg */
-static const unsigned int MAX_DISCONNECTED_TX_POOL_BYTES{20'000'000};
+inline constexpr unsigned int MAX_DISCONNECTED_TX_POOL_BYTES{20'000'000};
 /**
  * DisconnectedBlockTransactions
 

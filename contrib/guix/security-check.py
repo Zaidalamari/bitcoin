@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2015-2022 The Bitcoin Core developers
+# Copyright (c) 2015-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 '''
@@ -280,8 +280,8 @@ if __name__ == '__main__':
     for filename in sys.argv[1:]:
         binary = lief.parse(filename)
 
-        etype = binary.format
-        arch = binary.abstract.header.architecture
+        etype = binary.format # type: ignore[union-attr]
+        arch = binary.abstract.header.architecture # type: ignore[union-attr]
 
         failed: list[str] = []
         for (name, func) in CHECKS[etype][arch]:

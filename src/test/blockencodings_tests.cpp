@@ -1,4 +1,4 @@
-// Copyright (c) 2011-2022 The Bitcoin Core developers
+// Copyright (c) 2011-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -10,6 +10,7 @@
 #include <test/util/random.h>
 #include <test/util/txmempool.h>
 
+#include <test/util/common.h>
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
@@ -67,7 +68,7 @@ BOOST_AUTO_TEST_CASE(SimpleRoundTripTest)
     CBlock block(BuildBlockTestCase(rand_ctx));
 
     LOCK2(cs_main, pool.cs);
-    AddToMempool(pool, entry.FromTx(block.vtx[2]));
+    TryAddToMempool(pool, entry.FromTx(block.vtx[2]));
     BOOST_CHECK_EQUAL(pool.get(block.vtx[2]->GetHash()).use_count(), SHARED_TX_OFFSET + 0);
 
     // Do a simple ShortTxIDs RT
@@ -143,6 +144,13 @@ public:
     SERIALIZE_METHODS(TestHeaderAndShortIDs, obj) { READWRITE(obj.header, obj.nonce, Using<VectorFormatter<CustomUintFormatter<CBlockHeaderAndShortTxIDs::SHORTTXIDS_LENGTH>>>(obj.shorttxids), obj.prefilledtxn); }
 };
 
+struct TestPartiallyDownloadedBlock : PartiallyDownloadedBlock {
+    using PartiallyDownloadedBlock::PartiallyDownloadedBlock;
+
+    size_t GetMempoolCount() const { return mempool_count; }
+    size_t GetExtraCount() const { return extra_count; }
+};
+
 BOOST_AUTO_TEST_CASE(NonCoinbasePreforwardRTTest)
 {
     CTxMemPool& pool = *Assert(m_node.mempool);
@@ -151,7 +159,7 @@ BOOST_AUTO_TEST_CASE(NonCoinbasePreforwardRTTest)
     CBlock block(BuildBlockTestCase(rand_ctx));
 
     LOCK2(cs_main, pool.cs);
-    AddToMempool(pool, entry.FromTx(block.vtx[2]));
+    TryAddToMempool(pool, entry.FromTx(block.vtx[2]));
     BOOST_CHECK_EQUAL(pool.get(block.vtx[2]->GetHash()).use_count(), SHARED_TX_OFFSET + 0);
 
     Txid txhash;
@@ -222,7 +230,7 @@ BOOST_AUTO_TEST_CASE(SufficientPreforwardRTTest)
     CBlock block(BuildBlockTestCase(rand_ctx));
 
     LOCK2(cs_main, pool.cs);
-    AddToMempool(pool, entry.FromTx(block.vtx[1]));
+    TryAddToMempool(pool, entry.FromTx(block.vtx[1]));
     BOOST_CHECK_EQUAL(pool.get(block.vtx[1]->GetHash()).use_count(), SHARED_TX_OFFSET + 0);
 
     Txid txhash;
@@ -318,11 +326,18 @@ BOOST_AUTO_TEST_CASE(ReceiveWithExtraTransactions) {
     const CTransactionRef non_block_tx = MakeTransactionRef(std::move(mtx));
 
     CBlock block(BuildBlockTestCase(rand_ctx));
+    // Leave one transaction missing so scanning doesn't stop before the collision.
+    mtx = BuildTransactionTestCase();
+    mtx.vin[0].prevout.hash = Txid::FromUint256(rand_ctx.rand256());
+    block.vtx.push_back(MakeTransactionRef(std::move(mtx)));
+    block.hashMerkleRoot = BlockMerkleRoot(block);
+    while (!CheckProofOfWork(block.GetHash(), block.nBits, Params().GetConsensus())) ++block.nNonce;
+
     std::vector<std::pair<Wtxid, CTransactionRef>> extra_txn;
     extra_txn.resize(10);
 
     LOCK2(cs_main, pool.cs);
-    AddToMempool(pool, entry.FromTx(block.vtx[2]));
+    TryAddToMempool(pool, entry.FromTx(block.vtx[2]));
     BOOST_CHECK_EQUAL(pool.get(block.vtx[2]->GetHash()).use_count(), SHARED_TX_OFFSET + 0);
     // Ensure the non_block_tx is actually not in the block
     for (const auto &block_tx : block.vtx) {
@@ -351,6 +366,34 @@ BOOST_AUTO_TEST_CASE(ReceiveWithExtraTransactions) {
         // This transaction is now available via extra_txn:
         BOOST_CHECK(partial_block_with_extra.IsTxAvailable(1));
         BOOST_CHECK(partial_block_with_extra.IsTxAvailable(2));
+
+        // Simulate a mempool collision after finding an unrelated extra transaction.
+        extra_txn[2] = {block.vtx[2]->GetWitnessHash(), non_block_tx};
+        TestPartiallyDownloadedBlock partial_block_with_extra_collision{&pool};
+        BOOST_CHECK_EQUAL(partial_block_with_extra_collision.InitData(cmpctblock, extra_txn), READ_STATUS_OK);
+        BOOST_CHECK(partial_block_with_extra_collision.IsTxAvailable(1));
+        BOOST_CHECK(!partial_block_with_extra_collision.IsTxAvailable(2));
+        BOOST_CHECK_EQUAL(partial_block_with_extra_collision.GetMempoolCount(), 1U);
+        BOOST_CHECK_EQUAL(partial_block_with_extra_collision.GetExtraCount(), 1U);
+
+        // Now also collide the extra-sourced slot: both counters decrement exactly once.
+        extra_txn[3] = {block.vtx[1]->GetWitnessHash(), non_block_tx};
+        TestPartiallyDownloadedBlock partial_block_with_extra_source_collision{&pool};
+        BOOST_CHECK_EQUAL(partial_block_with_extra_source_collision.InitData(cmpctblock, extra_txn), READ_STATUS_OK);
+        BOOST_CHECK(!partial_block_with_extra_source_collision.IsTxAvailable(1));
+        BOOST_CHECK(!partial_block_with_extra_source_collision.IsTxAvailable(2));
+        BOOST_CHECK_EQUAL(partial_block_with_extra_source_collision.GetMempoolCount(), 0U);
+        BOOST_CHECK_EQUAL(partial_block_with_extra_source_collision.GetExtraCount(), 0U);
+
+        // Collided slots are terminal: not even the genuine transactions refill them.
+        extra_txn[4] = {block.vtx[2]->GetWitnessHash(), block.vtx[2]};
+        extra_txn[5] = {block.vtx[1]->GetWitnessHash(), block.vtx[1]};
+        TestPartiallyDownloadedBlock partial_block_no_refill{&pool};
+        BOOST_CHECK_EQUAL(partial_block_no_refill.InitData(cmpctblock, extra_txn), READ_STATUS_OK);
+        BOOST_CHECK(!partial_block_no_refill.IsTxAvailable(1));
+        BOOST_CHECK(!partial_block_no_refill.IsTxAvailable(2));
+        BOOST_CHECK_EQUAL(partial_block_no_refill.GetMempoolCount(), 0U);
+        BOOST_CHECK_EQUAL(partial_block_no_refill.GetExtraCount(), 0U);
     }
 }
 
@@ -411,16 +454,7 @@ BOOST_AUTO_TEST_CASE(TransactionsRequestDeserializationOverflowTest) {
     WriteCompactSize(stream, req0.indexes[2]);
 
     BlockTransactionsRequest req1;
-    try {
-        stream >> req1;
-        // before patch: deserialize above succeeds and this check fails, demonstrating the overflow
-        BOOST_CHECK(req1.indexes[1] < req1.indexes[2]);
-        // this shouldn't be reachable before or after patch
-        BOOST_CHECK(0);
-    } catch(std::ios_base::failure &) {
-        // deserialize should fail
-        BOOST_CHECK(true); // Needed to suppress "Test case [...] did not check any assertions"
-    }
+    BOOST_CHECK_EXCEPTION(stream >> req1, std::ios_base::failure, HasReason{"differential value overflow"});
 }
 
 BOOST_AUTO_TEST_SUITE_END()
